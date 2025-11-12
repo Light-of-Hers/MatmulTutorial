@@ -99,10 +99,10 @@ constexpr uint32_t SMEM_B_SIZE_PER_STAGE =
 
 constexpr uint32_t BAR_SIZE = sizeof(cutlass::arch::ClusterTransactionBarrier);
 constexpr uint32_t SMEM_SIZE =
-    (SMEM_C_SIZE_PER_STAGE + 2 * BAR_SIZE) * NUM_SMEM_C_STAGES +
+    SMEM_C_SIZE_PER_STAGE * NUM_SMEM_C_STAGES +
+    2 * BAR_SIZE * NUM_TMEM_C_STAGES +
     (SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + 2 * BAR_SIZE) *
-        NUM_SMEM_AB_STAGES +
-    sizeof(uint32_t);
+        NUM_SMEM_AB_STAGES;
 
 #define _CAT(__a, __b) __a##__b
 #define CAT(__a, __b) _CAT(__a, __b)
@@ -130,13 +130,12 @@ constexpr uint32_t SMEM_SIZE =
     case __LINE__:;          \
   } while (0)
 
-__global__ void __launch_bounds__(NUM_THRDS, 1)
-    __cluster_dims__(CTA_PAIR_SIZE, 1, 1)
-        matmul_sm100_bf16_2sm_256x256x64_kernel(
-            const __grid_constant__ cute::TmaDescriptor tensor_map_a,
-            const __grid_constant__ cute::TmaDescriptor tensor_map_b,
-            const __grid_constant__ cute::TmaDescriptor tensor_map_c,
-            uint32_t shape_m, uint32_t shape_n, uint32_t shape_k) {
+__global__ void __cluster_dims__(CTA_PAIR_SIZE, 1, 1)
+    matmul_sm100_bf16_2sm_256x256x64_kernel(
+        const __grid_constant__ cute::TmaDescriptor tensor_map_a,
+        const __grid_constant__ cute::TmaDescriptor tensor_map_b,
+        const __grid_constant__ cute::TmaDescriptor tensor_map_c,
+        uint32_t shape_m, uint32_t shape_n, uint32_t shape_k) {
   // prefetch tma-descs
   if (threadIdx.x == 0) {
     cute::prefetch_tma_descriptor(&tensor_map_a);
@@ -186,23 +185,23 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
   // tensor memory allocation
   if (warp_idx == 0) {
     cute::TMEM::Allocator2Sm().allocate(
-        NUM_TMEM_COLS, reinterpret_cast<uint32_t*>(bar_top_ptr));
+        NUM_TMEM_COLS, reinterpret_cast<uint32_t*>(smem_buffer));
   }
 
   // barrier initialization
+  UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
+    // arrived by CTA0/1-Warp0-Lane0
+    if (threadIdx.x == 0) sab_ready_bars[i].init(CTA_PAIR_SIZE);
+    // arrived by CTA0-Warp1-Lane0
+    if (threadIdx.x == 0) sab_empty_bars[i].init(1);
+  }
+  UNROLL for (uint32_t i = 0; i < NUM_TMEM_C_STAGES; ++i) {
+    // arrived by CTA0-Warp1-Lane0
+    if (threadIdx.x == 0) tc_ready_bars[i].init(1);
+    // arrived by CTA0/1-Warp4/5/6/7
+    if (threadIdx.x == 0) tc_empty_bars[i].init(CTA_PAIR_SIZE * NUM_EPI_THRDS);
+  }
   if (threadIdx.x == 0) {
-    UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
-      // arrived by CTA0/1-Warp0-Lane0
-      sab_ready_bars[i].init(CTA_PAIR_SIZE);
-      // arrived by CTA0-Warp1-Lane0
-      sab_empty_bars[i].init(1);
-    }
-    UNROLL for (uint32_t i = 0; i < NUM_TMEM_C_STAGES; ++i) {
-      // arrived by CTA0-Warp1-Lane0
-      tc_ready_bars[i].init(1);
-      // arrived by CTA0/1-Warp4/5/6/7
-      tc_empty_bars[i].init(CTA_PAIR_SIZE * NUM_EPI_THRDS);
-    }
     cutlass::arch::fence_view_async_shared();
     cutlass::arch::fence_barrier_init();
   }
@@ -460,8 +459,10 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
     while (producer() | consumer());
 
     // if (epi_thrd_idx == 0) cute::tma_store_wait<0>();
-    if (epi_warp_idx == 1) cute::TMEM::Allocator2Sm().free(0, NUM_TMEM_COLS);
+    // if (epi_warp_idx == 1) cute::TMEM::Allocator2Sm().free(0, NUM_TMEM_COLS);
   }
+  // cute::cluster_sync();
+  if (warp_idx == 0) cute::TMEM::Allocator2Sm().free(0, NUM_TMEM_COLS);
 }
 
 #define CRZ_STR_(x) #x

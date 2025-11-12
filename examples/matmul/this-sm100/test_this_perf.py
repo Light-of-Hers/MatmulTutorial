@@ -246,13 +246,14 @@ def test_matmul() -> None:
     lib, kernel = load_matmul_kernel()
 
     print("Testing Matmul:")
-    for m, n, k in [(8192, 9728, 16384)]:
+    # for m, n, k in [(8192, 9728, 16384)]:
+    for m, n, k in [(16384, 16384, 16384)]:
         major_opt = "NT"
         out_opt = "BF16"
         acc_opt = f"acc=0"
 
         a, b, c, d, ref_d = generate_normal(m, n, k)
-        kernel(a.data_ptr(), b.data_ptr(), d.data_ptr(), m, n, k)
+        assert kernel(a.data_ptr(), b.data_ptr(), d.data_ptr(), m, n, k) == 0
         diff = calc_diff(d, ref_d)
         assert diff < 0.0001, f"{m=}, {n=}, {k=}, {diff:.5f}"
 
