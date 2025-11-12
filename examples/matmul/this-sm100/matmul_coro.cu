@@ -152,21 +152,30 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
   // shared memory allocation
   extern __shared__ __align__(1024) uint8_t smem_buffer[];
   uint8_t* smem_top_ptr = smem_buffer;
-  bf16_t* smem_c[NUM_SMEM_C_STAGES];
-  UNROLL for (uint32_t i = 0; i < NUM_SMEM_C_STAGES; ++i) {
-    smem_c[i] = reinterpret_cast<bf16_t*>(
-        alloc(smem_top_ptr, SMEM_C_SIZE_PER_STAGE, 1024));
-  }
-  bf16_t* smem_a[NUM_SMEM_AB_STAGES];
-  UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
-    smem_a[i] = reinterpret_cast<bf16_t*>(
-        alloc(smem_top_ptr, SMEM_A_SIZE_PER_STAGE, 1024));
-  }
-  bf16_t* smem_b[NUM_SMEM_AB_STAGES];
-  UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
-    smem_b[i] = reinterpret_cast<bf16_t*>(
-        alloc(smem_top_ptr, SMEM_B_SIZE_PER_STAGE, 1024));
-  }
+  // bf16_t* smem_c[NUM_SMEM_C_STAGES];
+  // UNROLL for (uint32_t i = 0; i < NUM_SMEM_C_STAGES; ++i) {
+  //   smem_c[i] = reinterpret_cast<bf16_t*>(
+  //       alloc(smem_top_ptr, SMEM_C_SIZE_PER_STAGE));
+  // }
+  // bf16_t* smem_a[NUM_SMEM_AB_STAGES];
+  // UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
+  //   smem_a[i] = reinterpret_cast<bf16_t*>(
+  //       alloc(smem_top_ptr, SMEM_A_SIZE_PER_STAGE));
+  // }
+  // bf16_t* smem_b[NUM_SMEM_AB_STAGES];
+  // UNROLL for (uint32_t i = 0; i < NUM_SMEM_AB_STAGES; ++i) {
+  //   smem_b[i] = reinterpret_cast<bf16_t*>(
+  //       alloc(smem_top_ptr, SMEM_B_SIZE_PER_STAGE));
+  // }
+  bf16_t(*smem_c)[SMEM_C_SIZE_PER_STAGE / sizeof(bf16_t)] =
+      reinterpret_cast<decltype(smem_c)>(
+          alloc(smem_top_ptr, SMEM_C_SIZE_PER_STAGE * NUM_SMEM_C_STAGES, 1024));
+  bf16_t(*smem_a)[SMEM_A_SIZE_PER_STAGE / sizeof(bf16_t)] =
+      reinterpret_cast<decltype(smem_a)>(alloc(
+          smem_top_ptr, SMEM_A_SIZE_PER_STAGE * NUM_SMEM_AB_STAGES, 1024));
+  bf16_t(*smem_b)[SMEM_B_SIZE_PER_STAGE / sizeof(bf16_t)] =
+      reinterpret_cast<decltype(smem_b)>(alloc(
+          smem_top_ptr, SMEM_B_SIZE_PER_STAGE * NUM_SMEM_AB_STAGES, 1024));
   auto bar_top_ptr =
       reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_top_ptr);
   auto sab_ready_bars = alloc(bar_top_ptr, NUM_SMEM_AB_STAGES);
@@ -258,8 +267,7 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
         sab_pipe.next();
       }
     }
-  } else if (warp_idx == 1 and is_leader_cta) {  // UMMA worker
-
+  } else if (warp_idx == 1 and is_leader_cta) {                 // UMMA worker
     constexpr uint32_t UMMA_M = MAX_TMEM_ROWS * CTA_PAIR_SIZE;  // 128*2=256
     constexpr uint32_t UMMA_N = BLOCK_N;                        // 256
     constexpr uint32_t UMMA_K = 32 / sizeof(bf16_t);            // 16
@@ -360,11 +368,10 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
         UNROLL for (s = 0; s < kNumStores; ++s) {
           // SMEM-C-pipeline: wait-consumer-empty
           while (sc_empty_idx < sc_ready_idx) CO_YIELD;
-          if (sc_ready_idx >= NUM_SMEM_C_STAGES) {
-            if (epi_thrd_idx == 0)
-              cute::tma_store_wait<NUM_SMEM_C_STAGES - 1>();
-            cutlass::arch::NamedBarrier(NUM_EPI_THRDS).sync();
-          }
+          // if (sc_ready_idx >= NUM_SMEM_C_STAGES) {
+          if (epi_thrd_idx == 0) cute::tma_store_wait<NUM_SMEM_C_STAGES - 1>();
+          cutlass::arch::NamedBarrier(NUM_EPI_THRDS).sync();
+          // }
 
           // SMEM-C-pipeline: producer-execute, commit-producer-ready
           UNROLL for (uint32_t i = 0;
@@ -389,13 +396,9 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
                       cast_into_bf16_and_pack(values[4], values[5]),
                       cast_into_bf16_and_pack(values[6], values[7]));
           }
+          cutlass::arch::NamedBarrier(NUM_EPI_THRDS).sync();
           sc_ready_idx++;
         }
-      }
-
-      if (sc_ready_idx >= NUM_SMEM_C_STAGES * 1024) {
-        sc_ready_idx -= NUM_SMEM_C_STAGES * 512;
-        sc_empty_idx -= NUM_SMEM_C_STAGES * 512;
       }
 
       // TMEM-C-pipeline: commit-consumer-empty
@@ -426,8 +429,8 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
         UNROLL for (s = 0; s < kNumStores; ++s) {
           // SMEM-C-pipeline: wait-producer-ready
           while (sc_empty_idx >= sc_ready_idx) CO_YIELD;
-          cute::tma_store_fence();
-          cutlass::arch::NamedBarrier(NUM_EPI_THRDS).sync();
+          // cute::tma_store_fence();
+          // cutlass::arch::NamedBarrier(NUM_EPI_THRDS).sync();
 
           // SMEM-C-pipeline: consumer-execute
           if (epi_thrd_idx == 0) {
@@ -456,7 +459,7 @@ __global__ void __launch_bounds__(NUM_THRDS, 1)
 
     while (producer() | consumer());
 
-    if (epi_thrd_idx == 0) cute::tma_store_wait<0>();
+    // if (epi_thrd_idx == 0) cute::tma_store_wait<0>();
     if (epi_warp_idx == 1) cute::TMEM::Allocator2Sm().free(0, NUM_TMEM_COLS);
   }
 }
