@@ -5,8 +5,8 @@ void device_func(const cute::TmaDescriptor& A, const cute::TmaDescriptor& B, con
   constexpr int lane_dim = 32, warp_dim = 4, warpgroup_dim = 2, block_dim = 2, cluster_dim = 76, grid_dim = 1;
   int sp_m_e128s32_ = warp_idx/1%4, sp_m_e512s256_ = block_idx/1%2;
   
-  extern __shared__ __align__(1024) unsigned char shared_storage[]; // FIXED: __align__(1024)
-  // FIXED: bf16_t instead of bf16_t*
+  extern __shared__ __align__(1024) unsigned char shared_storage[]; // FIXED[DONE]: __align__(1024)
+  // FIXED[DONE]: bf16_t instead of bf16_t*
   bf16_t (*A_SMEM)[16384] = reinterpret_cast<decltype(A_SMEM)>(shared_storage + 0);
   bf16_t (*B_SMEM)[8192] = reinterpret_cast<decltype(B_SMEM)>(shared_storage + 131072);
   bf16_t (*C_SMEM)[8192] = reinterpret_cast<decltype(C_SMEM)>(shared_storage + 196608);
@@ -118,7 +118,7 @@ void device_func(const cute::TmaDescriptor& A, const cute::TmaDescriptor& B, con
       for (int k_e16384s64 = 0; k_e16384s64 < 256; ++k_e16384s64) {
         A_SMEM_ready_chans[(A_SMEM_state1.index % A_SMEM_ready_chans.N_SLOTS)].wait(A_SMEM_state1.phase);
         for (int k_e64s16 = 0; k_e64s16 < 4; ++k_e64s16) for (int m_e256s128 = 0; m_e256s128 < 2; ++m_e256s128) {
-          #define C_TMEM_off1(i0, i1, i2) (m_e256s128*256+i0*128+i1*8+i2) // FIXED: add brackets
+          #define C_TMEM_off1(i0, i1, i2) (m_e256s128*256+i0*128+i1*8+i2) // FIXED[DONE]: add brackets
           #define A_SMEM_off1(i0, i1, i2) m_e256s128*8192+i0*512+i1*64+((m_e256s128*128+i0*8+i1)%64^(k_e64s16*16+i2))*1
           #define B_SMEM_off1(i0, i1, i2) i0*512+i1*64+((i0*8+i1)%64^(k_e64s16*16+i2))*1
           cute::SM100_MMA_F16BF16_2x1SM_SS<bf16_t, bf16_t, float, 256, 256,
@@ -127,11 +127,11 @@ void device_func(const cute::TmaDescriptor& A, const cute::TmaDescriptor& B, con
               fma(make_8x128B_atom_smem_desc(
                       static_cast<uint16_t>(cute::cast_smem_ptr_to_uint(
                           ((bf16_t*)A_SMEM[A_SMEM_state1.stage] +
-                            A_SMEM_off1(0, 0, 0))) >> 4)), // FIXED: cast_to_int >> 4
+                            A_SMEM_off1(0, 0, 0))) >> 4)), // FIXED[DONE]: cast_to_int >> 4
                   make_8x128B_atom_smem_desc(
                       static_cast<uint16_t>(cute::cast_smem_ptr_to_uint(
                           ((bf16_t*)B_SMEM[A_SMEM_state1.stage] +
-                            B_SMEM_off1(0, 0, 0))) >> 4)), // FIXED: cast_to_int >> 4
+                            B_SMEM_off1(0, 0, 0))) >> 4)), // FIXED[DONE]: cast_to_int >> 4
                   ((uint32_t)C_TMEM[C_TMEM_state.stage] +
                     C_TMEM_off1(0, 0, 0)),
                   (C_TMEM_inited & (1 << (C_TMEM_off1(0, 0, 0) / 256))) != 0,
@@ -200,7 +200,7 @@ void device_func(const cute::TmaDescriptor& A, const cute::TmaDescriptor& B, con
         C_SMEM_state.next();
         CO_YIELD;
       }
-      C_TMEM_empty_chans[C_TMEM_state1.index % C_TMEM_empty_chans.N_SLOTS].arrive(0u); // FIXED: arrive(0u);
+      C_TMEM_empty_chans[C_TMEM_state1.index % C_TMEM_empty_chans.N_SLOTS].arrive(0u); // FIXED[DONE]: arrive(0u);
       C_TMEM_state1.next();
     }
     CO_END
@@ -228,10 +228,10 @@ void device_func(const cute::TmaDescriptor& A, const cute::TmaDescriptor& B, con
         while (C_SMEM_state.index <= C_SMEM_state1.index) CO_YIELD;
         #define C_off(i0, i1) sp_m_e16384s512_*8388608+sp_n_e16384s256_*256+sp_m_e512s256_*4194304+m_e256s128*2097152+n_e256s64*64+i0*16384+i1
         #define C_SMEM_off1(i0, i1) i0*64+((i0)%64^(i1))*1
-        // FIXED: if (...)
+        // FIXED[DONE]: if (...)
         if (warpgroup_idx == 0 && warp_idx == 0 && lane_idx == 0)
           cute::SM90_TMA_STORE_2D::copy(
-              &C, // FIXED: &C_SMEM to &C
+              &C, // FIXED[DONE]: &C_SMEM to &C
               ((bf16_t*)C_SMEM[C_SMEM_state1.stage] + C_SMEM_off1(0, 0)),
               sp_n_e16384s256_ * 256 + n_e256s64 * 64, 
               sp_m_e16384s512_ * 512 + sp_m_e512s256_ * 256 +
